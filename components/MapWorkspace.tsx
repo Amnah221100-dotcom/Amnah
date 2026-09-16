@@ -1,101 +1,22 @@
 'use client';
-
 import { useEffect, useRef, useState } from 'react';
-import maplibregl, { GeoJSONSource, Map } from 'maplibre-gl';
+import maplibregl,{GeoJSONSource,Map} from 'maplibre-gl';
 import * as turf from '@turf/turf';
+import { tacticaApi } from '../lib/api';
 import 'maplibre-gl/dist/maplibre-gl.css';
-
-type Tool = 'select' | 'point' | 'line' | 'polygon' | 'buffer' | 'fixed-box';
-
-const EMPTY: GeoJSON.FeatureCollection = { type: 'FeatureCollection', features: [] };
-
-export default function MapWorkspace() {
-  const container = useRef<HTMLDivElement | null>(null);
-  const mapRef = useRef<Map | null>(null);
-  const [tool, setTool] = useState<Tool>('select');
-  const [points, setPoints] = useState<[number, number][]>([]);
-  const [width, setWidth] = useState(10);
-  const [height, setHeight] = useState(10);
-  const [unit, setUnit] = useState<'kilometers' | 'meters'>('kilometers');
-  const [bufferRadius, setBufferRadius] = useState(5);
-
-  const addFeature = (feature: GeoJSON.Feature) => {
-    const map = mapRef.current;
-    const source = map?.getSource('drawings') as GeoJSONSource | undefined;
-    if (!source) return;
-    const current = (source.serialize().data as GeoJSON.FeatureCollection) || EMPTY;
-    source.setData({ type: 'FeatureCollection', features: [...(current.features || []), feature] });
-  };
-
-  useEffect(() => {
-    if (!container.current || mapRef.current) return;
-    const map = new maplibregl.Map({
-      container: container.current,
-      style: 'https://demotiles.maplibre.org/style.json',
-      center: [54.3773, 24.4539],
-      zoom: 10,
-    });
-    mapRef.current = map;
-    map.addControl(new maplibregl.NavigationControl(), 'top-right');
-    map.on('load', () => {
-      map.addSource('drawings', { type: 'geojson', data: EMPTY });
-      map.addLayer({ id: 'draw-fill', type: 'fill', source: 'drawings', filter: ['==', '$type', 'Polygon'], paint: { 'fill-color': '#22d3ee', 'fill-opacity': 0.14 } });
-      map.addLayer({ id: 'draw-line', type: 'line', source: 'drawings', paint: { 'line-color': '#67e8f9', 'line-width': 3 } });
-      map.addLayer({ id: 'draw-point', type: 'circle', source: 'drawings', filter: ['==', '$type', 'Point'], paint: { 'circle-radius': 7, 'circle-color': '#fde047', 'circle-stroke-color': '#071421', 'circle-stroke-width': 2 } });
-    });
-    return () => { map.remove(); mapRef.current = null; };
-  }, []);
-
-  useEffect(() => {
-    const map = mapRef.current;
-    if (!map) return;
-    const click = (e: maplibregl.MapMouseEvent) => {
-      const p: [number, number] = [e.lngLat.lng, e.lngLat.lat];
-      if (tool === 'point') addFeature(turf.point(p));
-      if (tool === 'fixed-box') {
-        const kmW = unit === 'meters' ? width / 1000 : width;
-        const kmH = unit === 'meters' ? height / 1000 : height;
-        const north = turf.destination(p, kmH / 2, 0, { units: 'kilometers' });
-        const south = turf.destination(p, kmH / 2, 180, { units: 'kilometers' });
-        const nw = turf.destination(north, kmW / 2, 270, { units: 'kilometers' }).geometry.coordinates;
-        const ne = turf.destination(north, kmW / 2, 90, { units: 'kilometers' }).geometry.coordinates;
-        const se = turf.destination(south, kmW / 2, 90, { units: 'kilometers' }).geometry.coordinates;
-        const sw = turf.destination(south, kmW / 2, 270, { units: 'kilometers' }).geometry.coordinates;
-        addFeature(turf.polygon([[nw, ne, se, sw, nw]], { kind: 'fixed-size-box', width, height, unit }));
-      }
-      if (tool === 'buffer') addFeature(turf.buffer(turf.point(p), bufferRadius, { units: 'kilometers' })!);
-      if (tool === 'line' || tool === 'polygon') setPoints(prev => [...prev, p]);
-    };
-    const dbl = (e: maplibregl.MapMouseEvent) => {
-      e.preventDefault();
-      if (tool === 'line' && points.length >= 1) addFeature(turf.lineString([...points, [e.lngLat.lng, e.lngLat.lat]]));
-      if (tool === 'polygon' && points.length >= 2) {
-        const ring = [...points, [e.lngLat.lng, e.lngLat.lat] as [number, number]];
-        addFeature(turf.polygon([[...ring, ring[0]]]));
-      }
-      setPoints([]);
-    };
-    map.on('click', click);
-    map.on('dblclick', dbl);
-    return () => { map.off('click', click); map.off('dblclick', dbl); };
-  }, [tool, points, width, height, unit, bufferRadius]);
-
-  const clear = () => {
-    const source = mapRef.current?.getSource('drawings') as GeoJSONSource | undefined;
-    source?.setData(EMPTY);
-    setPoints([]);
-  };
-
-  return <div className="real-map-wrap">
-    <div className="map-toolbar">
-      {(['select','point','line','polygon','buffer','fixed-box'] as Tool[]).map(t => <button key={t} className={tool === t ? 'selected' : ''} onClick={() => { setTool(t); setPoints([]); }}>{t}</button>)}
-      <button onClick={clear}>Clear</button>
-    </div>
-    <div className="map-options">
-      {tool === 'fixed-box' && <><label>W <input type="number" value={width} onChange={e => setWidth(+e.target.value)}/></label><label>H <input type="number" value={height} onChange={e => setHeight(+e.target.value)}/></label><select value={unit} onChange={e => setUnit(e.target.value as 'kilometers'|'meters')}><option value="kilometers">km</option><option value="meters">m</option></select><span>Click map center</span></>}
-      {tool === 'buffer' && <label>Buffer km <input type="number" value={bufferRadius} onChange={e => setBufferRadius(+e.target.value)}/></label>}
-      {(tool === 'line' || tool === 'polygon') && <span>Click vertices · Double-click to finish</span>}
-    </div>
-    <div ref={container} className="real-map" />
-  </div>;
+type Tool='select'|'point'|'line'|'polygon'|'rectangle'|'circle'|'buffer'|'fixed-box'|'measure-distance'|'measure-area';
+const EMPTY:GeoJSON.FeatureCollection={type:'FeatureCollection',features:[]};
+export default function MapWorkspace(){
+ const container=useRef<HTMLDivElement|null>(null),mapRef=useRef<Map|null>(null),features=useRef<GeoJSON.Feature[]>([]);
+ const [tool,setTool]=useState<Tool>('select'),[points,setPoints]=useState<[number,number][]>([]),[width,setWidth]=useState(10),[height,setHeight]=useState(10),[unit,setUnit]=useState<'kilometers'|'meters'>('kilometers'),[rotation,setRotation]=useState(0),[bufferRadius,setBufferRadius]=useState(5),[message,setMessage]=useState('Ready');
+ const sync=()=>{const s=mapRef.current?.getSource('drawings') as GeoJSONSource|undefined;s?.setData({type:'FeatureCollection',features:features.current});};
+ const add=(f:GeoJSON.Feature)=>{features.current=[...features.current,f];sync();};
+ useEffect(()=>{if(!container.current||mapRef.current)return;const map=new maplibregl.Map({container:container.current,style:'https://demotiles.maplibre.org/style.json',center:[54.3773,24.4539],zoom:10});mapRef.current=map;map.addControl(new maplibregl.NavigationControl(),'top-right');map.on('load',()=>{map.addSource('drawings',{type:'geojson',data:EMPTY});map.addLayer({id:'draw-fill',type:'fill',source:'drawings',filter:['==','$type','Polygon'],paint:{'fill-color':'#22d3ee','fill-opacity':.14}});map.addLayer({id:'draw-line',type:'line',source:'drawings',paint:{'line-color':'#67e8f9','line-width':3}});map.addLayer({id:'draw-point',type:'circle',source:'drawings',filter:['==','$type','Point'],paint:{'circle-radius':7,'circle-color':'#fde047','circle-stroke-color':'#071421','circle-stroke-width':2}})});return()=>{map.remove();mapRef.current=null}},[]);
+ useEffect(()=>{const map=mapRef.current;if(!map)return;let start:[number,number]|null=null;const click=(e:maplibregl.MapMouseEvent)=>{const p:[number,number]=[e.lngLat.lng,e.lngLat.lat];if(tool==='point')add(turf.point(p,{kind:'point'}));if(tool==='buffer')add(turf.buffer(turf.point(p),bufferRadius,{units:'kilometers'})!);if(tool==='circle')add(turf.circle(p,bufferRadius,{units:'kilometers',steps:64,properties:{kind:'circle'}}));if(tool==='fixed-box'){const w=unit==='meters'?width/1000:width,h=unit==='meters'?height/1000:height,n=turf.destination(p,h/2,0,{units:'kilometers'}),s=turf.destination(p,h/2,180,{units:'kilometers'}),nw=turf.destination(n,w/2,270,{units:'kilometers'}).geometry.coordinates,ne=turf.destination(n,w/2,90,{units:'kilometers'}).geometry.coordinates,se=turf.destination(s,w/2,90,{units:'kilometers'}).geometry.coordinates,sw=turf.destination(s,w/2,270,{units:'kilometers'}).geometry.coordinates;let box=turf.polygon([[nw,ne,se,sw,nw]],{kind:'fixed-size-box',width,height,unit,rotation});if(rotation)box=turf.transformRotate(box,rotation,{pivot:p});add(box)}if(['line','polygon','measure-distance','measure-area'].includes(tool))setPoints(v=>[...v,p]);if(tool==='rectangle'){if(!start){start=p;setMessage('Select opposite corner')}else{const b=turf.bboxPolygon([Math.min(start[0],p[0]),Math.min(start[1],p[1]),Math.max(start[0],p[0]),Math.max(start[1],p[1])]);add(b);start=null;setMessage('Rectangle created')}}};const dbl=(e:maplibregl.MapMouseEvent)=>{e.preventDefault();const end:[number,number]=[e.lngLat.lng,e.lngLat.lat],ring=[...points,end];if((tool==='line'||tool==='measure-distance')&&points.length)add(turf.lineString(ring,{measurement:tool==='measure-distance'?`${turf.length(turf.lineString(ring),{units:'kilometers'}).toFixed(2)} km`:undefined}));if((tool==='polygon'||tool==='measure-area')&&points.length>1){const poly=turf.polygon([[...ring,ring[0]]]);poly.properties={...(poly.properties||{}),measurement:tool==='measure-area'?`${(turf.area(poly)/1e6).toFixed(2)} km²`:undefined};add(poly)}setPoints([]);setMessage('Ready')};map.on('click',click);map.on('dblclick',dbl);return()=>{map.off('click',click);map.off('dblclick',dbl)}},[tool,points,width,height,unit,rotation,bufferRadius]);
+ const clear=()=>{features.current=[];sync();setPoints([])};
+ const undo=()=>{features.current=features.current.slice(0,-1);sync()};
+ const saveAOI=async()=>{const f=[...features.current].reverse().find(x=>x.geometry.type==='Polygon');if(!f){setMessage('Draw a polygon first');return}try{await tacticaApi.aois.create({name:`AOI-${Date.now()}`,geometry:f.geometry as any,properties:{source:'TACTICA Map'}});setMessage('AOI saved to PostGIS')}catch(e){setMessage(e instanceof Error?e.message:'Save failed')}};
+ const exportGeoJSON=()=>{const blob=new Blob([JSON.stringify({type:'FeatureCollection',features:features.current},null,2)],{type:'application/geo+json'}),a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='tactica-drawings.geojson';a.click();URL.revokeObjectURL(a.href)};
+ const tools:Tool[]=['select','point','line','polygon','rectangle','circle','buffer','fixed-box','measure-distance','measure-area'];
+ return <div className="real-map-wrap"><div className="map-toolbar">{tools.map(t=><button key={t} className={tool===t?'selected':''} onClick={()=>{setTool(t);setPoints([])}}>{t}</button>)}<button onClick={undo}>Undo</button><button onClick={clear}>Clear</button><button onClick={saveAOI}>Save AOI</button><button onClick={exportGeoJSON}>GeoJSON</button></div><div className="map-options">{tool==='fixed-box'&&<><label>W <input type="number" value={width} onChange={e=>setWidth(+e.target.value)}/></label><label>H <input type="number" value={height} onChange={e=>setHeight(+e.target.value)}/></label><select value={unit} onChange={e=>setUnit(e.target.value as any)}><option value="kilometers">km</option><option value="meters">m</option></select><label>↻ <input type="number" value={rotation} onChange={e=>setRotation(+e.target.value)}/></label></>}{(tool==='buffer'||tool==='circle')&&<label>Radius km <input type="number" value={bufferRadius} onChange={e=>setBufferRadius(+e.target.value)}/></label>}<span>{message}</span></div><div ref={container} className="real-map"/></div>;
 }
