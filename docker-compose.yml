@@ -1,0 +1,30 @@
+services:
+  db:
+    image: postgis/postgis:17-3.5
+    environment:
+      POSTGRES_DB: tactica
+      POSTGRES_USER: tactica
+      POSTGRES_PASSWORD: tactica
+    ports: ["5432:5432"]
+    volumes:
+      - tactica_db:/var/lib/postgresql/data
+      - ./database/schema.sql:/docker-entrypoint-initdb.d/001-schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tactica -d tactica"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+  api:
+    image: python:3.12-slim
+    working_dir: /app
+    command: sh -c "pip install -r requirements.txt && uvicorn main:app --host 0.0.0.0 --port 8000 --reload"
+    environment:
+      DATABASE_URL: postgresql://tactica:tactica@db:5432/tactica
+      WEB_ORIGIN: http://localhost:3000
+    volumes: ["./api:/app"]
+    ports: ["8000:8000"]
+    depends_on:
+      db:
+        condition: service_healthy
+volumes:
+  tactica_db:
