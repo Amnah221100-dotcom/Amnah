@@ -1,3 +1,4 @@
+import json
 from contextlib import asynccontextmanager
 from typing import Any
 from uuid import UUID
@@ -5,6 +6,8 @@ from uuid import UUID
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
+from psycopg.rows import dict_row
+from psycopg.types.json import Jsonb
 from psycopg_pool import AsyncConnectionPool
 from pydantic_settings import BaseSettings
 
@@ -13,7 +16,7 @@ class Settings(BaseSettings):
     web_origin: str = "http://localhost:3000"
 
 settings = Settings()
-pool = AsyncConnectionPool(settings.database_url, open=False)
+pool = AsyncConnectionPool(settings.database_url, kwargs={"row_factory": dict_row}, open=False)
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -71,14 +74,14 @@ async def list_aois(case_id: UUID | None = None):
 @app.post("/api/v1/aois", status_code=201)
 async def create_aoi(body: AOICreate):
     async with pool.connection() as conn:
-        row = await conn.execute("INSERT INTO aois(case_id,name,geometry,properties) VALUES(%s,%s,ST_SetSRID(ST_GeomFromGeoJSON(%s),4326),%s) RETURNING id,name,ST_AsGeoJSON(geometry)::json AS geometry,properties,created_at", (body.case_id,body.name,str(body.geometry).replace("'",'"'),body.properties))
+        row = await conn.execute("INSERT INTO aois(case_id,name,geometry,properties) VALUES(%s,%s,ST_SetSRID(ST_GeomFromGeoJSON(%s),4326),%s) RETURNING id,name,ST_AsGeoJSON(geometry)::json AS geometry,properties,created_at", (body.case_id,body.name,json.dumps(body.geometry),Jsonb(body.properties)))
         return dict(await row.fetchone())
 
 @app.post("/api/v1/evidence", status_code=201)
 async def create_evidence(body: EvidenceCreate):
     async with pool.connection() as conn:
-        geo = None if body.geometry is None else str(body.geometry).replace("'",'"')
-        row = await conn.execute("INSERT INTO evidence(case_id,title,evidence_type,geometry,metadata) VALUES(%s,%s,%s,CASE WHEN %s IS NULL THEN NULL ELSE ST_SetSRID(ST_GeomFromGeoJSON(%s),4326) END,%s) RETURNING id,title,evidence_type,created_at", (body.case_id,body.title,body.evidence_type,geo,geo,body.metadata))
+        geo = None if body.geometry is None else json.dumps(body.geometry)
+        row = await conn.execute("INSERT INTO evidence(case_id,title,evidence_type,geometry,metadata) VALUES(%s,%s,%s,CASE WHEN %s::text IS NULL THEN NULL ELSE ST_SetSRID(ST_GeomFromGeoJSON(%s),4326) END,%s) RETURNING id,title,evidence_type,created_at", (body.case_id,body.title,body.evidence_type,geo,geo,Jsonb(body.metadata)))
         return dict(await row.fetchone())
 
 @app.get("/api/v1/alerts")
